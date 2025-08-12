@@ -65,6 +65,9 @@
     .error { color: var(--red); }
     .ok { color: var(--green); }
     .link { color: var(--accent); text-decoration: none }
+
+    /* TradingView mini cell */
+    .tvq { min-width: 240px; min-height: 56px }
   </style>
 </head>
 <body>
@@ -158,7 +161,7 @@
               <thead>
                 <tr>
                   <th>When</th>
-                  <th>Ticker</th>
+                  <th>Quote</th> <!-- moved here -->
                   <th>Summary</th>
                   <th>Sentiment</th>
                   <th>Score</th>
@@ -335,6 +338,58 @@
       }
     }
 
+    // ——— TradingView helpers ———
+    function tvSymbol(ticker, exchange){
+      // Map your DB exchange -> TradingView exchange code (extend as needed)
+      const map = {
+        'NASDAQ': 'NASDAQ',
+        'NYSE': 'NYSE',
+        'NYSE ARCA': 'AMEX',
+        'AMEX': 'AMEX',
+        // add more as your data requires… (e.g., XNAS -> NASDAQ)
+      };
+      const ex = (exchange || '').toUpperCase().trim();
+      return map[ex] ? `${map[ex]}:${ticker}` : ticker; // falls back to plain ticker
+    }
+
+    function createTVWidget(container, symbol){
+      container.innerHTML = `
+        <div class="tradingview-widget-container">
+          <div class="tradingview-widget-container__widget"></div>
+        </div>`;
+      const script = document.createElement('script');
+      script.type = 'text/javascript';
+      script.async = true;
+      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-single-quote.js';
+      script.text = JSON.stringify({
+        symbol,
+        colorTheme: 'dark',
+        isTransparent: true,
+        locale: 'en',
+        width: '100%'
+      });
+      container.querySelector('.tradingview-widget-container').appendChild(script);
+    }
+
+    // Lazy-load widgets only when cells are visible
+    function initTVWidgets(scope=document){
+      const cells = Array.from(scope.querySelectorAll('.tvq'));
+      if(!cells.length) return;
+
+      const io = new IntersectionObserver((entries, obs)=>{
+        entries.forEach(entry=>{
+          if(entry.isIntersecting){
+            const el = entry.target;
+            const symbol = tvSymbol(el.dataset.ticker, el.dataset.exchange);
+            createTVWidget(el, symbol);
+            obs.unobserve(el);
+          }
+        });
+      }, { root: scope.closest('.rows') || null, threshold: 0.1 });
+
+      cells.forEach(el => io.observe(el));
+    }
+
     // ————— Connection UI —————
     (function initConn(){
       $('#url').value = state.url; $('#key').value = state.key;
@@ -428,21 +483,7 @@
             ${aggs.length? `<table><thead><tr><th>Ticker</th><th>Verdict</th><th>Bull</th><th>Bear</th><th>Neutral</th></tr></thead>
             <tbody>${aggs.map(a=>`<tr>
               <td class="mono">${escapeHtml(a.ticker)}<br>
-              <!-- TradingView Widget BEGIN -->
-<div class="tradingview-widget-container">
-  <div class="tradingview-widget-container__widget"></div>
-  <div class="tradingview-widget-copyright"><a href="https://www.tradingview.com/symbols/NASDAQ-AAPL/?exchange=NASDAQ" rel="noopener nofollow" target="_blank"><span class="blue-text">AAPL quotes by TradingView</span></a></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-single-quote.js" async>
-  {
-  "symbol": "NASDAQ:AAPL",
-  "colorTheme": "light",
-  "isTransparent": false,
-  "locale": "en",
-  "width": 350
-}
-  </script>
-</div>
-<!-- TradingView Widget END --><br><span class="muted">${escapeHtml(a.stock?.name||'')}</span></td>
+              <span class="muted">${escapeHtml(a.stock?.name||'')}</span></td>
               <td>${verdictPill(a.verdict)}</td>
               <td>${fmtNum(a.bull_score)}</td>
               <td>${fmtNum(a.bear_score)}</td>
@@ -492,12 +533,14 @@
       $('#mentionsBody').innerHTML = rows.map(r=>`
         <tr>
           <td class="nowrap">${fmtDate(r.published_at)}</td>
-          <td class="mono">${escapeHtml(r.ticker)}<br><span class="muted">${escapeHtml(r.stock?.name||'')}</span><br>${ohlcLine(r.open,r.high,r.low,r.close)}</td>
+          <td><div class="tvq" data-ticker="${escapeHtml(r.ticker)}" data-exchange="${escapeHtml(r.stock?.exchange||'')}"></div></td>
           <td>${escapeHtml(r.summary)}</td>
           <td>${sentimentPill(r.sentiment_label)}</td>
           <td>${fmtNum(r.sentiment_score)}</td>
           <td><a class="link" href="${addTimeParam(r.video?.url||'', r.start_s)}" target="_blank" rel="noreferrer">${escapeHtml(r.video?.title||'')}</a><div class="small muted">${escapeHtml(r.video?.channel?.title||'')}</div></td>
         </tr>`).join('');
+      // After rendering rows, mount widgets for this table
+      initTVWidgets($('#mentionsBody'));
     }
 
     // ————— Aggregates tab —————
@@ -607,24 +650,5 @@
       return String(s||'').replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
     }
   </script>
-
-  <!--
-  ─────────────────────────────────────────────────────────────────────────────
-  Setup notes
-  ─────────────────────────────────────────────────────────────────────────────
-  • Host this file anywhere (S3, Vercel static, GitHub Pages).
-  • Click “Save” to store your Supabase URL and anon key locally in the browser.
-  • This app uses the REST interface only (no supabase-js). It relies on foreign key
-    relationships to embed rows (e.g., select=video:videos(...),stock:stocks(...)).
-  • Make sure Row Level Security policies allow read access for these tables. Example:
-      CREATE POLICY "Allow read for anon" ON public.videos
-        FOR SELECT TO anon USING (true);
-    Repeat for other tables or define more granular policies.
-  • CORS: in the Supabase project settings, allow your website origin.
-  • If you want to hardcode credentials instead of the connect form, set:
-        state.url = 'https://YOUR-PROJECT.supabase.co';
-        state.key = 'YOUR-ANON-KEY'; state.connected = true; then call loaders.
-  -->
 </body>
 </html>
-
